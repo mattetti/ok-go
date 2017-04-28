@@ -11,6 +11,12 @@ import (
 	"os"
 	"time"
 
+	"golang.org/x/oauth2"
+
+	"flag"
+
+	"encoding/json"
+
 	"github.com/gordonklaus/portaudio"
 	embedded "github.com/mattetti/ok-go/google.golang.org/genproto/googleapis/assistant/embedded/v1alpha1"
 	"google.golang.org/api/option"
@@ -22,23 +28,78 @@ var (
 	// Debug allows the caller to see more debug print messages.
 	Debug bool
 	// keep the state in memory to advance the conversation.
-	conversationState []byte
-	canceler          context.CancelFunc
-	bgCtx             = context.Background()
+	conversationState   []byte
+	canceler            context.CancelFunc
+	bgCtx               = context.Background()
+	flagCredentialsPath = flag.String("creds", os.Getenv("GOOGLE_APPLICATION_CREDENTIALS"), "path to the credentials file")
+	tokenSource         oauth2.TokenSource
 )
 
+type JSONToken struct {
+	Installed struct {
+		ClientID                string   `json:"client_id"`
+		ProjectID               string   `json:"project_id"`
+		AuthURI                 string   `json:"auth_uri"`
+		TokenURI                string   `json:"token_uri"`
+		AuthProviderX509CertURL string   `json:"auth_provider_x509_cert_url"`
+		ClientSecret            string   `json:"client_secret"`
+		RedirectUris            []string `json:"redirect_uris"`
+	} `json:"installed"`
+}
+
 func main() {
+	flag.Parse()
 	// connect to the audio drivers
 	portaudio.Initialize()
 	defer portaudio.Terminate()
+
+	f, err := os.Open(*flagCredentialsPath)
+	if err != nil {
+		panic(err)
+	}
+	defer f.Close()
+	var token JSONToken
+	if err = json.NewDecoder(f).Decode(&token); err != nil {
+		log.Println("failed to decode json token", err)
+		panic(err)
+	}
+
+	ctx := context.Background()
+	conf := &oauth2.Config{
+		ClientID:     token.Installed.ClientID,
+		ClientSecret: token.Installed.ClientSecret,
+		Scopes:       []string{"https://www.googleapis.com/auth/assistant-sdk-prototype"},
+		Endpoint: oauth2.Endpoint{
+			AuthURL:  "https://accounts.google.com/o/oauth2/auth",
+			TokenURL: "https://accounts.google.com/o/oauth2/token",
+		},
+	}
+
+	// Redirect user to consent page to ask for permission
+	// for the scopes specified above.
+	url := conf.AuthCodeURL("state", oauth2.AccessTypeOnline)
+	fmt.Printf("Visit the URL for the auth dialog: %v", url)
+
+	// Use the authorization code that is pushed to the redirect
+	// URL. Exchange will do the handshake to retrieve the
+	// initial access token. The HTTP Client returned by
+	// conf.Client will refresh the token as necessary.
+	var code string
+	if _, err := fmt.Scan(&code); err != nil {
+		log.Fatal(err)
+	}
+	tok, err := conf.Exchange(ctx, code)
+	if err != nil {
+		log.Fatal(err)
+	}
+	tokenSource = conf.TokenSource(ctx, tok)
 
 	start()
 }
 
 func newConn(ctx context.Context) (conn *grpc.ClientConn, err error) {
-	// connect to Google for a set duration to avoid running forever
-	// and charge the user a lot of money.
 	return transport.DialGRPC(ctx,
+		option.WithTokenSource(tokenSource),
 		option.WithEndpoint("embeddedassistant.googleapis.com:443"),
 		option.WithScopes("https://www.googleapis.com/auth/assistant-sdk-prototype"),
 	)
