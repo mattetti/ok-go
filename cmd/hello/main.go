@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net/http"
 	"os"
 	"time"
 
@@ -33,6 +34,8 @@ var (
 	bgCtx               = context.Background()
 	flagCredentialsPath = flag.String("creds", os.Getenv("GOOGLE_APPLICATION_CREDENTIALS"), "path to the credentials file")
 	tokenSource         oauth2.TokenSource
+	gcp                 *gcpAuthWrapper
+	oauthSrv            *http.Server
 )
 
 type JSONToken struct {
@@ -53,6 +56,32 @@ func main() {
 	portaudio.Initialize()
 	defer portaudio.Terminate()
 
+	gcp = &gcpAuthWrapper{}
+	gcp.Start()
+
+	start()
+}
+
+func oauthHandler(w http.ResponseWriter, r *http.Request) {
+	permissionCode := r.URL.Query().Get("code")
+	// TODO: check the status code
+	w.Write([]byte(fmt.Sprintf("<h1>Your code is: %s</h1>", permissionCode)))
+	ctx := context.Background()
+	tok, err := gcp.Conf.Exchange(ctx, permissionCode)
+	if err != nil {
+		fmt.Println("failed to retrieve the oauth2 token")
+		log.Fatal(err)
+	}
+	tokenSource = gcp.Conf.TokenSource(ctx, tok)
+	// kill the http server
+	oauthSrv.Shutdown(context.Background())
+}
+
+type gcpAuthWrapper struct {
+	Conf *oauth2.Config
+}
+
+func (w *gcpAuthWrapper) Start() {
 	f, err := os.Open(*flagCredentialsPath)
 	if err != nil {
 		panic(err)
@@ -64,11 +93,11 @@ func main() {
 		panic(err)
 	}
 
-	ctx := context.Background()
-	conf := &oauth2.Config{
+	w.Conf = &oauth2.Config{
 		ClientID:     token.Installed.ClientID,
 		ClientSecret: token.Installed.ClientSecret,
 		Scopes:       []string{"https://www.googleapis.com/auth/assistant-sdk-prototype"},
+		RedirectURL:  "http://localhost:8080",
 		Endpoint: oauth2.Endpoint{
 			AuthURL:  "https://accounts.google.com/o/oauth2/auth",
 			TokenURL: "https://accounts.google.com/o/oauth2/token",
@@ -77,24 +106,17 @@ func main() {
 
 	// Redirect user to consent page to ask for permission
 	// for the scopes specified above.
-	url := conf.AuthCodeURL("state", oauth2.AccessTypeOnline)
-	fmt.Printf("Visit the URL for the auth dialog: %v", url)
+	url := w.Conf.AuthCodeURL("state", oauth2.AccessTypeOnline)
+	fmt.Printf("Copy and paste the following url into your browser, then paste the code here\n%s\n", url)
 
-	// Use the authorization code that is pushed to the redirect
-	// URL. Exchange will do the handshake to retrieve the
-	// initial access token. The HTTP Client returned by
-	// conf.Client will refresh the token as necessary.
-	var code string
-	if _, err := fmt.Scan(&code); err != nil {
-		log.Fatal(err)
+	// Start the server to receive the code
+	oauthSrv = &http.Server{Addr: ":8080", Handler: http.DefaultServeMux}
+	http.HandleFunc("/", oauthHandler)
+	err = oauthSrv.ListenAndServe()
+	if err != http.ErrServerClosed {
+		log.Fatalf("listen: %s\n", err)
 	}
-	tok, err := conf.Exchange(ctx, code)
-	if err != nil {
-		log.Fatal(err)
-	}
-	tokenSource = conf.TokenSource(ctx, tok)
-
-	start()
+	fmt.Println("Launching the Google Assistant")
 }
 
 func newConn(ctx context.Context) (conn *grpc.ClientConn, err error) {
