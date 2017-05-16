@@ -52,6 +52,10 @@ type JSONToken struct {
 
 func main() {
 	flag.Parse()
+	if *flagCredentialsPath == "" {
+		fmt.Println("you need to provide a path to your credentials or set GOOGLE_APPLICATION_CREDENTIALS")
+		os.Exit(1)
+	}
 	// connect to the audio drivers
 	portaudio.Initialize()
 	defer portaudio.Terminate()
