@@ -10,6 +10,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/exec"
 	"time"
 
 	"golang.org/x/oauth2"
@@ -112,6 +113,8 @@ func (w *gcpAuthWrapper) Start() {
 	// for the scopes specified above.
 	url := w.Conf.AuthCodeURL("state", oauth2.AccessTypeOnline)
 	fmt.Printf("Copy and paste the following url into your browser, then paste the code here\n%s\n", url)
+	cmd := exec.Command("open", url)
+	cmd.Run()
 
 	// Start the server to receive the code
 	oauthSrv = &http.Server{Addr: ":8080", Handler: http.DefaultServeMux}
@@ -201,6 +204,8 @@ func start() {
 		os.Exit(1)
 	}
 
+	// TODO: write to file.
+
 	// listening in the background
 	go func() {
 		bufIn := make([]int16, 8196)
@@ -273,10 +278,6 @@ func start() {
 			log.Fatalf("Cannot get a response from the assistant: %v", err)
 			continue
 		}
-		if err := resp.GetError(); err != nil {
-			log.Fatalf("Received error from the assistant: %v", err)
-			continue
-		}
 		result := resp.GetResult()
 		if result == nil {
 			log.Println("nil result")
@@ -301,11 +302,11 @@ func start() {
 		if result.ConversationState != nil {
 			conversationState = result.ConversationState
 		}
-		if resp.GetEventType() == embedded.ConverseResponse_END_OF_UTTERANCE {
-			log.Println("Google said we are done, ciao!")
-			micStopCh <- true
-			return
-		}
+		// if resp.GetEventType() == embedded.ConverseResponse_END_OF_UTTERANCE {
+		// 	log.Println("Google said we are done, ciao!")
+		// 	micStopCh <- true
+		// 	return
+		// }
 		audioOut := resp.GetAudioOut()
 		if audioOut != nil {
 			log.Println("audio out from the assistant")
@@ -327,13 +328,17 @@ func start() {
 		case embedded.ConverseResult_CLOSE_MICROPHONE:
 			log.Println("microphone closed")
 			stop(false)
-			return
+			// return
 		case embedded.ConverseResult_DIALOG_FOLLOW_ON:
 			log.Println("continuing dialog")
 		default:
 			log.Println("unmanaged microphone mode", micMode)
-			stop(false)
-			return
+			// stop(false)
+			// return
+		}
+		if err := resp.GetError(); err != nil {
+			log.Fatalf("Received error from the assistant: %v", err)
+			continue
 		}
 	}
 
