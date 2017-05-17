@@ -19,6 +19,8 @@ import (
 
 	"encoding/json"
 
+	"runtime"
+
 	"github.com/gordonklaus/portaudio"
 	embedded "github.com/mattetti/ok-go/google.golang.org/genproto/googleapis/assistant/embedded/v1alpha1"
 	"google.golang.org/api/option"
@@ -34,9 +36,11 @@ var (
 	canceler            context.CancelFunc
 	bgCtx               = context.Background()
 	flagCredentialsPath = flag.String("creds", os.Getenv("GOOGLE_APPLICATION_CREDENTIALS"), "path to the credentials file")
+	flagRemoteAccess    = flag.Bool("remote", false, "is the machine running the program accessed remotely (via SSH for instance)")
 	tokenSource         oauth2.TokenSource
 	gcp                 *gcpAuthWrapper
 	oauthSrv            *http.Server
+	oauthRedirectURL    = "http://localhost:8080"
 )
 
 type JSONToken struct {
@@ -56,6 +60,9 @@ func main() {
 	if *flagCredentialsPath == "" {
 		fmt.Println("you need to provide a path to your credentials or set GOOGLE_APPLICATION_CREDENTIALS")
 		os.Exit(1)
+	}
+	if *flagRemoteAccess {
+		oauthRedirectURL = "urn:ietf:wg:oauth:2.0:oob"
 	}
 	// connect to the audio drivers
 	portaudio.Initialize()
@@ -102,7 +109,7 @@ func (w *gcpAuthWrapper) Start() {
 		ClientID:     token.Installed.ClientID,
 		ClientSecret: token.Installed.ClientSecret,
 		Scopes:       []string{"https://www.googleapis.com/auth/assistant-sdk-prototype"},
-		RedirectURL:  "http://localhost:8080",
+		RedirectURL:  oauthRedirectURL,
 		Endpoint: oauth2.Endpoint{
 			AuthURL:  "https://accounts.google.com/o/oauth2/auth",
 			TokenURL: "https://accounts.google.com/o/oauth2/token",
@@ -112,16 +119,34 @@ func (w *gcpAuthWrapper) Start() {
 	// Redirect user to consent page to ask for permission
 	// for the scopes specified above.
 	url := w.Conf.AuthCodeURL("state", oauth2.AccessTypeOnline)
-	fmt.Printf("Copy and paste the following url into your browser, then paste the code here\n%s\n", url)
-	cmd := exec.Command("open", url)
-	cmd.Run()
 
-	// Start the server to receive the code
-	oauthSrv = &http.Server{Addr: ":8080", Handler: http.DefaultServeMux}
-	http.HandleFunc("/", oauthHandler)
-	err = oauthSrv.ListenAndServe()
-	if err != http.ErrServerClosed {
-		log.Fatalf("listen: %s\n", err)
+	if runtime.GOOS != "darwin" {
+		fmt.Printf("Copy and paste the following url into your browser to authenticate:\n%s\n", url)
+	} else {
+		cmd := exec.Command("open", url)
+		cmd.Run()
+	}
+	// if we are using the builtin auth server locally
+	if *flagRemoteAccess {
+		// remote access
+		reader := bufio.NewReader(os.Stdin)
+		fmt.Println("Enter the auth code followed by enter")
+		permissionCode, _ := reader.ReadString('\n')
+		ctx := context.Background()
+		tok, err := gcp.Conf.Exchange(ctx, permissionCode)
+		if err != nil {
+			fmt.Println("failed to retrieve the oauth2 token")
+			log.Fatal(err)
+		}
+		tokenSource = gcp.Conf.TokenSource(ctx, tok)
+	} else {
+		// Start the server to receive the code
+		oauthSrv = &http.Server{Addr: ":8080", Handler: http.DefaultServeMux}
+		http.HandleFunc("/", oauthHandler)
+		err = oauthSrv.ListenAndServe()
+		if err != http.ErrServerClosed {
+			log.Fatalf("listen: %s\n", err)
+		}
 	}
 	fmt.Println("Launching the Google Assistant")
 }
@@ -300,6 +325,7 @@ func start() {
 
 		// handle the conversation state so the next connection can resume our dialog
 		if result.ConversationState != nil {
+			log.Println("storing conversation state")
 			conversationState = result.ConversationState
 		}
 		// if resp.GetEventType() == embedded.ConverseResponse_END_OF_UTTERANCE {
