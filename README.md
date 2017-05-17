@@ -2,8 +2,13 @@
 
 ## Usage
 
-Run `cmd/hello/main.go` to send requests to Google Assistant.
-Note that you need to be authenticated as per https://developers.google.com/assistant/sdk/prototype/getting-started-other-platforms/config-dev-project-and-account
+You first need to have a Google Cloud Platform project
+[Follow the steps](https://developers.google.com/assistant/sdk/prototype/getting-started-other-platforms/config-dev-project-and-account) to configure a Google API Console Project and a Google Account to use with the Google Assistant SDK.
+
+Download the client_secret_XXXXX.json file from the [Google API Console Project credentials section](https://console.developers.google.com/apis/credentials) and store it wherever you want.
+
+Run `cmd/hello/main.go -creds=<path to credentials file>` to start the Google Assistant.
+
 
 ## gRPC bindings
 
