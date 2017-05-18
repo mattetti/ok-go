@@ -53,6 +53,7 @@ func main() {
 }
 
 func newConn(ctx context.Context) (conn *grpc.ClientConn, err error) {
+	tokenSource := gcp.Conf.TokenSource(ctx, oauthToken)
 	return transport.DialGRPC(ctx,
 		option.WithTokenSource(tokenSource),
 		option.WithEndpoint("embeddedassistant.googleapis.com:443"),
@@ -104,7 +105,7 @@ func start() {
 				SampleRateHertz: 16000,
 			},
 			AudioOutConfig: &embedded.AudioOutConfig{
-				Encoding:         embedded.AudioOutConfig_MP3,
+				Encoding:         embedded.AudioOutConfig_LINEAR16,
 				SampleRateHertz:  16000,
 				VolumePercentage: 60,
 			},
@@ -170,6 +171,7 @@ func start() {
 			select {
 			case <-micStopCh:
 				log.Println("turning off the mic")
+				conversation.CloseSend()
 				if err = micstream.Stop(); err != nil {
 					log.Println("failed to stop the input")
 				}
@@ -183,26 +185,46 @@ func start() {
 	}()
 
 	// audio out
-	bufOut := make([]int16, 8192)
+	bufOut := make([]int16, 799)
+
+	// h, err := portaudio.DefaultHostApi()
+	// p := portaudio.LowLatencyParameters(nil, h.DefaultOutputDevice)
+	// p.Input.Channels = 1
+	// p.Output.Channels = 1
+	// bus := &audioBus{buffer: make([]int16, 1600)}
+	// bus.Stream, err = portaudio.OpenStream(p, bus.processAudio)
+	// defer bus.Stop()
+	// if err := bus.Start(); err != nil {
+	// 	log.Println("Failed to start audioport -", err)
+	// }
+
 	// var bufWriter bytes.Buffer
 	streamOut, err := portaudio.OpenDefaultStream(0, 1, 16000, len(bufOut), &bufOut)
-	defer streamOut.Close()
+	defer func() {
+		if err := streamOut.Close(); err != nil {
+			log.Println("failed to close the stream", err)
+		}
+		log.Println("stream closed")
+	}()
 	if err = streamOut.Start(); err != nil {
 		log.Println("failed to start audio out")
 		panic(err)
 	}
-	defer streamOut.Close()
 
 	fmt.Println("Listening")
-	outF, err := os.Create("audioOut.mp3")
-	if err != nil {
-		panic(err)
-	}
-	defer outF.Close()
+	// outF, err := os.Create("audioOut.mp3")
+	// if err != nil {
+	// 	panic(err)
+	// }
+	// defer outF.Close()
 	// waiting for google assistant response
 	for {
 		resp, err := conversation.Recv()
 		if err == io.EOF {
+			log.Println("we are done!!!!")
+			// micStopCh <- true
+			askTheUser()
+			// stop(false)
 			break
 		}
 		if err != nil {
@@ -231,31 +253,47 @@ func start() {
 			conversationState = result.ConversationState
 		}
 		if resp.GetEventType() == embedded.ConverseResponse_END_OF_UTTERANCE {
-			log.Println("Google said we are done, ciao!")
-			// 	micStopCh <- true
+			log.Println("Google said you are done, are you?!")
+			micStopCh <- true
+			// askTheUser()
 			// 	return
 		}
 		audioOut := resp.GetAudioOut()
 		if audioOut != nil {
-			log.Println("audio out from the assistant")
-			log.Printf("audio data: %d\n", len(audioOut.AudioData))
+			log.Printf("audio out from the assistant (%d bytes)\n", len(audioOut.AudioData))
 
 			// write to disk
-			outF.Write(audioOut.AudioData)
+			// outF.Write(audioOut.AudioData)
 
-			signal := bytes.NewReader(audioOut.AudioData)
+			signal := bytes.NewBuffer(audioOut.AudioData)
 			var err error
+			// var buffedSize int
 			for err == nil {
+				// tmpBuf := make([]int16, len(audioOut.AudioData)/2-1)
 				err = binary.Read(signal, binary.LittleEndian, bufOut)
+				if err != nil {
+					// log.Println(err)
+					break
+				}
+
+				// fmt.Println(len(bufOut), bufOut[:16])
+				// TODO: append the signal to a buffer that we read from in processAudio
+				// if buffedSize >= 1600 {
+				// log.Println("Writing to the audio card")
+				if portErr := streamOut.Write(); portErr != nil {
+					log.Println("Failed to write to audio out", err)
+				}
+				// }
+
 				// if err != nil && (err != io.EOF || err != io.ErrUnexpectedEOF) {
 				// 	log.Println("failed to read audio out", err)
 				// 	streamOut.Write()
 				// 	break
 				// }
-				if portErr := streamOut.Write(); portErr != nil {
-					log.Println("Failed to write to audio out", err)
-					// break
-				}
+				// if portErr := streamOut.Write(); portErr != nil {
+				// 	log.Println("Failed to write to audio out", err)
+				// 	// break
+				// }
 			}
 		}
 		micMode := result.GetMicrophoneMode()
@@ -266,6 +304,7 @@ func start() {
 			// return
 		case embedded.ConverseResult_DIALOG_FOLLOW_ON:
 			log.Println("continuing dialog")
+		case embedded.ConverseResult_MICROPHONE_MODE_UNSPECIFIED:
 		default:
 			log.Println("unmanaged microphone mode", micMode)
 			// stop(false)
@@ -273,8 +312,23 @@ func start() {
 		}
 		if err := resp.GetError(); err != nil {
 			log.Fatalf("Received error from the assistant: %v", err)
-			continue
+			// continue
 		}
 	}
 
+}
+
+type audioBus struct {
+	*portaudio.Stream
+	buffer []int16
+	i      int
+}
+
+func (b *audioBus) processAudio(in, out []int16) {
+	// fmt.Println(len(out))
+	// for i := range out {
+	// 	out[i] = .7 * b.buffer[b.i]
+	// 	b.buffer[b.i] = in[i]
+	// 	b.i = (b.i + 1) % len(b.buffer)
+	// }
 }

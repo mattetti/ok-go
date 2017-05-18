@@ -15,11 +15,11 @@ import (
 )
 
 var (
-	tokenSource        oauth2.TokenSource
+	oauthToken         *oauth2.Token
 	gcp                *gcpAuthWrapper
 	oauthSrv           *http.Server
 	oauthRedirectURL   = "http://localhost:8080"
-	oauthTokenFilename = "oauthToken"
+	oauthTokenFilename = "oauthTokenCache"
 )
 
 type JSONToken struct {
@@ -61,6 +61,11 @@ func (w *gcpAuthWrapper) Start() {
 		},
 	}
 
+	if *flagForceLogout {
+		fmt.Println("Deleting potential oauth cache")
+		os.Remove(oauthTokenFilename)
+	}
+
 	// check if we have an oauth file on disk
 	if hasCachedOauth() {
 		err = loadTokenSource()
@@ -74,7 +79,7 @@ func (w *gcpAuthWrapper) Start() {
 
 	// Redirect user to consent page to ask for permission
 	// for the scopes specified above.
-	url := w.Conf.AuthCodeURL("state", oauth2.AccessTypeOnline)
+	url := w.Conf.AuthCodeURL("state", oauth2.AccessTypeOffline)
 
 	if runtime.GOOS != "darwin" {
 		fmt.Printf("Copy and paste the following url into your browser to authenticate:\n%s\n", url)
@@ -118,45 +123,44 @@ func hasCachedOauth() bool {
 }
 
 func setTokenSource(permissionCode string) {
+	var err error
 	ctx := context.Background()
-	tok, err := gcp.Conf.Exchange(ctx, permissionCode)
+	oauthToken, err = gcp.Conf.Exchange(ctx, permissionCode)
 	if err != nil {
 		fmt.Println("failed to retrieve the oauth2 token")
 		log.Fatal(err)
 	}
-	tokenSource = gcp.Conf.TokenSource(ctx, tok)
+	fmt.Println(oauthToken)
 	of, err := os.Create(oauthTokenFilename)
 	if err != nil {
 		panic(err)
 	}
 	defer of.Close()
-	// TODO: add app creds to cache
-	t, _ := tokenSource.Token()
-	if err = json.NewEncoder(of).Encode(t); err != nil {
+	if err = json.NewEncoder(of).Encode(oauthToken); err != nil {
 		log.Println("Something went wrong when storing the token source", err)
 		panic(err)
 	}
 }
 
-type StoredSourceToken struct {
-	SToken *oauth2.Token
-}
+// type StoredSourceToken struct {
+// 	SToken *oauth2.Token
+// }
 
-func (t *StoredSourceToken) Token() (*oauth2.Token, error) {
-	return t.SToken, nil
-}
+// func (t *StoredSourceToken) Token() (*oauth2.Token, error) {
+// 	return t.SToken, nil
+// }
 
 func loadTokenSource() error {
-	// return fmt.Errorf("TODO")
 	f, err := os.Open(oauthTokenFilename)
 	if err != nil {
-		return fmt.Errorf("failed to load the token source %v", err)
+		return fmt.Errorf("failed to load the token source (deleted from disk) %v", err)
 	}
 	defer f.Close()
 	var token oauth2.Token
 	if err = json.NewDecoder(f).Decode(&token); err != nil {
 		return err
 	}
-	tokenSource = &StoredSourceToken{SToken: &token}
+	oauthToken = &token
+	// tokenSource = &StoredSourceToken{SToken: &token}
 	return nil
 }
